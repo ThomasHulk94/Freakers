@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FREAKERS - SA80 TACTICAL</title>
+    <style>
+        html, body { 
+            cursor: none !important; 
+            margin: 0; 
+            background: #000; 
+            overflow: hidden; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+        }
+        
+        canvas { 
+            display: block; 
+            background: #1a1d12; 
+            cursor: none !important; 
+            border: 4px solid #ff0000;
+            box-shadow: 0 0 30px rgba(255, 0, 0, 0.3);
+        }
+
+        #ui { 
+            position: absolute; 
+            top: 30px; 
+            left: 30px; 
+            pointer-events: none; 
+            color: white; 
+            font-family: 'Courier New', monospace; 
+            text-shadow: 2px 2px #000; 
+        }
+        .stat { font-size: 20px; font-weight: bold; margin-bottom: 5px; }
+        .adr-count { color: #00fbff; }
+        
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            color: white; font-family: 'Courier New', monospace;
+            z-index: 100;
+        }
+        #death-screen { display: none; text-align: center; }
+        #death-screen h1 { color: #ff0000; font-size: 60px; margin: 10px; letter-spacing: 5px; text-shadow: 0 0 20px #ff0000; }
+        .btn {
+            margin-top: 20px; padding: 15px 30px;
+            background: #ff0000; color: white; border: none;
+            cursor: pointer; font-size: 20px; font-weight: bold;
+            box-shadow: 0 4px 0 #7b0000;
+        }
+        .btn:active { transform: translateY(4px); box-shadow: none; }
+    </style>
+</head>
+<body>
+    <div id="overlay">
+        <div id="start-screen" style="text-align: center;">
+            <h1 style="font-size: 70px; color: #ff0000; letter-spacing: 8px; margin-bottom: 10px; text-shadow: 0 0 20px #ff0000;">FREAKERS</h1>
+            <p style="font-size: 18px;">WASD: Move | MOUSE: Fire | R: Reload (Discard SA80 Mag)</p>
+            <p style="font-size: 16px; color: #f1c40f;">1 CRATE = 0.5 MAG | 2 CRATES = 1 ADRENALINE</p>
+            <button class="btn" onclick="startGame()">ENTER THE WASTE</button>
+        </div>
+
+        <div id="death-screen">
+            <h1>FREAKED</h1>
+            <p>KILLS THIS RUN: <span id="final-score" style="color:#f1c40f">0</span></p>
+            <p>ALL-TIME BEST: <span id="high-score" style="color:#f1c40f">0</span></p>
+            <button class="btn" onclick="location.reload()">RE-DEPLOY</button>
+        </div>
+    </div>
+
+    <div id="ui">
+        <div class="stat">HP: <span id="hp">100</span>%</div>
+        <div class="stat">KILLS: <span id="score-ui">0</span></div>
+        <div class="stat">ROUNDS: <span id="ammo">60</span> / 60</div>
+        <div class="stat" style="color: #3498db">MAGS: <span id="mags-ui">1</span> <span id="mag-parts" style="font-size:12px; color:#aaa"></span></div>
+        <div class="stat" style="color: #e67e22">MOLOTOVS: <span id="mols">2</span></div>
+        <div class="stat adr-count">ADRENALINE: <span id="adr-val">1</span> / 2</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const deathScreen = document.getElementById('death-screen');
+const startScreen = document.getElementById('start-screen');
+
+canvas.width = window.innerWidth - 60;
+canvas.height = window.innerHeight - 60;
+
+const BASE_SPEED = 3;
+const BOOST_SPEED = 6;
+const MAG_SIZE = 60; 
+const FIRE_RATE = 5; 
+
+let player, mouse, recoil, frame, score, gameActive, zombies, deadZombies, bullets, fires, ammoDrops, keys, groundDebris;
+let isReloading = false, isMouseDown = false, isRightMouseDown = false;
+let shotTimer = 0, adrShots = 1, cratesTowardsAdr = 0, adrTimer = 0;
+let magParts = 0;
+
+function init() {
+    player = { x: canvas.width/2, y: canvas.height/2, speed: BASE_SPEED, hp: 100, ammo: 60, mags: 1, molotovs: 2 };
+    mouse = { x: 0, y: 0 };
+    recoil = 10; frame = 0; score = 0; gameActive = false; isReloading = false;
+    adrShots = 1; cratesTowardsAdr = 0; adrTimer = 0; shotTimer = 0; magParts = 0;
+    zombies = []; deadZombies = []; bullets = []; fires = []; ammoDrops = []; keys = {};
+    groundDebris = [];
+    generateGroundDebris();
+}
+
+function startGame() { init(); gameActive = true; overlay.style.display = 'none'; }
+
+function handleDeath() {
+    gameActive = false; overlay.style.display = 'flex'; deathScreen.style.display = 'block'; startScreen.style.display = 'none';
+    let savedHigh = localStorage.getItem('freakersHigh') || 0;
+    if (score > savedHigh) { localStorage.setItem('freakersHigh', score); savedHigh = score; }
+    document.getElementById('final-score').innerText = score;
+    document.getElementById('high-score').innerText = savedHigh;
+}
+
+function generateGroundDebris() {
+    for (let i = 0; i < 40; i++) {
+        groundDebris.push({ type: 'rock', x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: 2 + Math.random() * 5, color: Math.random() > 0.5 ? '#444' : '#666' });
+    }
+    for (let i = 0; i < 30; i++) {
+        groundDebris.push({ type: 'stick', x: Math.random() * canvas.width, y: Math.random() * canvas.height, len: 10 + Math.random() * 20, angle: Math.random() * Math.PI, color: '#4a3728' });
+    }
+    for (let i = 0; i < 150; i++) {
+        groundDebris.push({ type: 'grass', x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: 4 + Math.random() * 6 });
+    }
+}
+
+window.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+});
+window.addEventListener('mousedown', e => { if (e.button === 0) isMouseDown = true; if (e.button === 2) isRightMouseDown = true; });
+window.addEventListener('mouseup', e => { if (e.button === 0) isMouseDown = false; if (e.button === 2) isRightMouseDown = false; });
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase() === 'r') startReload();
+    if (e.key.toLowerCase() === 'e') useAdrenaline();
+    if (e.code === "Space" && player.molotovs > 0) { player.molotovs--; fires.push({ x: mouse.x, y: mouse.y, radius: 95, life: 180 }); }
+});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+function shoot() {
+    if (!gameActive || isReloading || player.ammo <= 0) return;
+    const angle = Math.atan2(mouse.y - player.y, mouse.x - player.x) + (Math.random() - 0.5) * (recoil / 180);
+    bullets.push({ x: player.x, y: player.y, angle: angle, vx: Math.cos(angle) * 18, vy: Math.sin(angle) * 18 });
+    player.ammo--; recoil = Math.min(recoil + 6, 50); shotTimer = FIRE_RATE;
+}
+
+function startReload() {
+    if (!isReloading && player.mags > 0 && player.ammo < MAG_SIZE) {
+        isReloading = true;
+        player.ammo = 0; 
+        setTimeout(() => { if (gameActive) { player.mags--; player.ammo = MAG_SIZE; isReloading = false; } }, 1800); 
+    }
+}
+
+function useAdrenaline() { if (adrShots > 0 && gameActive) { adrShots--; player.hp = Math.min(player.hp + 40, 100); player.speed = BOOST_SPEED; adrTimer = 240; } }
+
+function drawHuman(tCtx, x, y, color, isZombie) {
+    tCtx.lineWidth = 2; tCtx.strokeStyle = color;
+    if(!isZombie) {
+        const angle = Math.atan2(mouse.y - y, mouse.x - x);
+        
+        // Render SA80 (Bullpup Rifle)
+        tCtx.save();
+        tCtx.translate(x, y - 5);
+        tCtx.rotate(angle);
+        
+        tCtx.lineWidth = 4;
+        // Main receiver
+        tCtx.beginPath(); tCtx.moveTo(-5, 0); tCtx.lineTo(15, 0); tCtx.stroke();
+        // Bullpup Magazine (behind trigger)
+        tCtx.beginPath(); tCtx.moveTo(-3, 0); tCtx.lineTo(-3, 6); tCtx.stroke();
+        // Barrel
+        tCtx.lineWidth = 2;
+        tCtx.beginPath(); tCtx.moveTo(15, 0); tCtx.lineTo(22, 0); tCtx.stroke();
+        // SUSAT Scope (Top rail)
+        tCtx.beginPath(); tCtx.moveTo(2, -2); tCtx.lineTo(10, -2); tCtx.stroke();
+        
+        tCtx.restore();
+
+        // Laser
+        if (!isReloading) {
+            const lx = x + Math.cos(angle) * 22, ly = (y - 5) + Math.sin(angle) * 22;
+            const grad = tCtx.createLinearGradient(lx, ly, x + Math.cos(angle) * 400, (y - 5) + Math.sin(angle) * 400);
+            grad.addColorStop(0, `rgba(255, 0, 0, 0.6)`); grad.addColorStop(1, 'rgba(255, 0, 0, 0)');
+            tCtx.save(); tCtx.globalCompositeOperation = 'lighter'; tCtx.beginPath(); tCtx.strokeStyle = grad; tCtx.lineWidth = 4; tCtx.moveTo(lx, ly); tCtx.lineTo(x + Math.cos(angle) * 400, (y - 5) + Math.sin(angle) * 400); tCtx.stroke(); tCtx.restore();
+        }
+
+        // Stick Body
+        tCtx.lineWidth = 2;
+        tCtx.beginPath(); tCtx.arc(x, y - 15, 6, 0, Math.PI*2); tCtx.stroke(); 
+        tCtx.beginPath(); tCtx.moveTo(x, y - 9); tCtx.lineTo(x, y + 5); tCtx.stroke(); 
+        tCtx.beginPath(); tCtx.moveTo(x, y + 5); tCtx.lineTo(x - 5, y + 15); tCtx.stroke(); 
+        tCtx.beginPath(); tCtx.moveTo(x, y + 5); tCtx.lineTo(x + 5, y + 15); tCtx.stroke(); 
+        if (isReloading) { tCtx.fillStyle = "#f1c40f"; tCtx.font = "bold 14px Courier New"; tCtx.fillText("RELOADING...", x - 45, y - 35); }
+    } else {
+        tCtx.beginPath(); tCtx.moveTo(x, y - 9); tCtx.lineTo(x, y + 5); tCtx.stroke();
+        tCtx.beginPath(); tCtx.moveTo(x, y + 5); tCtx.lineTo(x - 5, y + 15); tCtx.stroke();
+        tCtx.beginPath(); tCtx.moveTo(x, y + 5); tCtx.lineTo(x + 5, y + 15); tCtx.stroke();
+        tCtx.beginPath(); tCtx.moveTo(x, y - 5); tCtx.lineTo(x - 8, y - 10); tCtx.stroke();
+        tCtx.beginPath(); tCtx.moveTo(x, y - 5); tCtx.lineTo(x + 8, y - 10); tCtx.stroke();
+        tCtx.beginPath(); tCtx.arc(x, y - 15, 6, 0, Math.PI*2); tCtx.stroke();
+    }
+}
+
+class Particle {
+    constructor(x, y, vx, vy, life, color, type) { this.x = x; this.y = y; this.vx = vx; this.vy = vy; this.life = life; this.maxLife = life; this.color = color; this.type = type; }
+    draw(tCtx) {
+        tCtx.fillStyle = this.color.replace('ALPHA', this.life / this.maxLife);
+        if (this.type === 'gore') tCtx.fillRect(this.x, this.y, 3, 3);
+        else { tCtx.beginPath(); tCtx.arc(this.x, this.y, 2, 0, Math.PI*2); tCtx.fill(); }
+    }
+    update() { this.x += this.vx; this.y += this.vy; this.life--; this.vy += (this.type === 'gore' ? 0.05 : 0.02); }
+}
+let particles = [];
+
+function killZombie(z, type) {
+    score += 1; zombies = zombies.filter(item => item !== z);
+    if (type === 'bullet') {
+        for (let i = 0; i < 20; i++) {
+            let a = Math.random() * Math.PI * 2, s = 1 + Math.random() * 4;
+            particles.push(new Particle(z.x, z.y, Math.cos(a) * s, Math.sin(a) * s, 30 + Math.random() * 20, 'rgba(170, 0, 0, ALPHA)', 'gore'));
+        }
+    } else deadZombies.push({ x: z.x, y: z.y, life: 60 });
+}
+
+function update() {
+    if (!gameActive) return;
+    if (keys['w'] && player.y > 20) player.y -= player.speed;
+    if (keys['s'] && player.y < canvas.height - 20) player.y += player.speed;
+    if (keys['a'] && player.x > 20) player.x -= player.speed;
+    if (keys['d'] && player.x < canvas.width - 20) player.x += player.speed;
+    if (shotTimer > 0) shotTimer--;
+    if (isMouseDown && shotTimer <= 0) shoot();
+    if (adrTimer > 0) { adrTimer--; if (adrTimer <= 0) player.speed = BASE_SPEED; }
+
+    bullets.forEach((b, i) => { b.x += b.vx; b.y += b.vy; if(b.x<0||b.x>canvas.width||b.y<0||b.y>canvas.height) bullets.splice(i,1); });
+    fires.forEach((f, i) => { f.life--; if(f.life <= 0) fires.splice(i,1); });
+    particles.forEach((p, i) => { p.update(); if (p.life <= 0) particles.splice(i,1); });
+    deadZombies.forEach((dz, i) => { 
+        dz.life--; 
+        if (Math.random() > 0.8) particles.push(new Particle(dz.x, dz.y, (Math.random()-0.5), -1 - Math.random(), 30, 'rgba(230, 126, 34, ALPHA)', 'ash'));
+        if (dz.life <= 0) deadZombies.splice(i,1); 
+    });
+
+    zombies.forEach((z) => {
+        let dx = player.x-z.x, dy = player.y-z.y, d = Math.sqrt(dx*dx+dy*dy);
+        z.x += (dx/d) * z.speed; z.y += (dy/d) * z.speed;
+        if (d < 25) player.hp -= 0.5;
+        bullets.forEach((b, bi) => { if(Math.sqrt((z.x-b.x)**2 + (z.y-b.y)**2) < 18) { killZombie(z, 'bullet'); bullets.splice(bi,1); } });
+        fires.forEach(f => { if(Math.sqrt((z.x-f.x)**2 + (z.y-f.y)**2) < f.radius && Math.random() > 0.95) killZombie(z, 'fire'); });
+    });
+
+    frame++;
+    if (frame % 20 === 0) {
+        let s = Math.floor(Math.random()*4);
+        let zX = s==0 ? -20 : (s==1 ? canvas.width+20 : Math.random()*canvas.width);
+        let zY = s==2 ? -20 : (s==3 ? canvas.height+20 : Math.random()*canvas.height);
+        zombies.push({ x: zX, y: zY, speed: 1.8 + (score/350) }); 
+    }
+    if (frame % 450 === 0) ammoDrops.push({ x: 100+Math.random()*(canvas.width-200), y: 100+Math.random()*(canvas.height-200) });
+
+    ammoDrops.forEach((d, i) => {
+        if(Math.sqrt((player.x-d.x)**2 + (player.y-d.y)**2) < 30) {
+            magParts++;
+            if(magParts >= 2) { player.mags = Math.min(player.mags + 1, 4); magParts = 0; }
+            player.molotovs = Math.min(player.molotovs + 1, 3);
+            cratesTowardsAdr++;
+            if(cratesTowardsAdr >= 2) { if(adrShots < 2) adrShots++; cratesTowardsAdr = 0; }
+            ammoDrops.splice(i,1);
+        }
+    });
+
+    document.getElementById('hp').innerText = Math.ceil(player.hp);
+    document.getElementById('score-ui').innerText = score;
+    document.getElementById('ammo').innerText = player.ammo;
+    document.getElementById('mags-ui').innerText = player.mags;
+    document.getElementById('mag-parts').innerText = magParts === 1 ? "(+0.5)" : "";
+    document.getElementById('mols').innerText = player.molotovs;
+    document.getElementById('adr-val').innerText = adrShots;
+
+    if (player.hp <= 0) handleDeath();
+}
+
+function renderWorld(tCtx, zoom = 1) {
+    tCtx.save();
+    if (zoom !== 1) { tCtx.translate(mouse.x, mouse.y); tCtx.scale(zoom, zoom); tCtx.translate(-mouse.x, -mouse.y); }
+    groundDebris.forEach(d => {
+        if (d.type === 'rock') { tCtx.fillStyle = d.color; tCtx.beginPath(); tCtx.arc(d.x, d.y, d.size, 0, 7); tCtx.fill(); }
+        else if (d.type === 'stick') { 
+            tCtx.strokeStyle = d.color; tCtx.lineWidth = 2; tCtx.save(); tCtx.translate(d.x, d.y); tCtx.rotate(d.angle);
+            tCtx.beginPath(); tCtx.moveTo(-d.len/2, 0); tCtx.lineTo(d.len/2, 0); tCtx.stroke(); tCtx.restore(); 
+        } else {
+            tCtx.strokeStyle = '#2d3d1a'; tCtx.lineWidth = 1;
+            tCtx.beginPath(); tCtx.moveTo(d.x, d.y); tCtx.lineTo(d.x-2, d.y-d.size); tCtx.moveTo(d.x, d.y); tCtx.lineTo(d.x+2, d.y-d.size); tCtx.stroke();
+        }
+    });
+    fires.forEach(f => { tCtx.fillStyle = `rgba(255, 60, 0, ${f.life/300})`; tCtx.beginPath(); tCtx.arc(f.x, f.y, f.radius, 0, Math.PI*2); tCtx.fill(); });
+    ammoDrops.forEach(d => {
+        tCtx.save(); tCtx.translate(d.x, d.y); tCtx.fillStyle = "#2c3e50"; tCtx.fillRect(-15, -12, 30, 24);
+        tCtx.fillStyle = "#f1c40f"; tCtx.beginPath(); tCtx.ellipse(-4, 2, 5, 2, 0, 0, 7); tCtx.fill();
+        tCtx.beginPath(); tCtx.ellipse(4, 2, 5, 2, 0, 0, 7); tCtx.fill(); tCtx.restore();
+    });
+    deadZombies.forEach(dz => {
+        let r = dz.life / 60; tCtx.globalAlpha = r; tCtx.strokeStyle = r > 0.8 ? "white" : `rgb(${r*255}, ${r*100}, 0)`;
+        drawHuman(tCtx, dz.x, dz.y, tCtx.strokeStyle, true); tCtx.globalAlpha = 1;
+    });
+    drawHuman(tCtx, player.x, player.y, (adrTimer > 0 ? "#00fbff" : "#3498db"), false);
+    zombies.forEach(z => drawHuman(tCtx, z.x, z.y, "#95a5a6", true));
+    tCtx.globalCompositeOperation = 'lighter';
+    bullets.forEach(b => {
+        tCtx.save(); tCtx.translate(b.x, b.y); tCtx.rotate(b.angle); tCtx.fillStyle = "rgba(255, 0, 0, 0.4)";
+        tCtx.beginPath(); tCtx.ellipse(0, 0, 10, 4, 0, 0, 7); tCtx.fill(); tCtx.fillStyle = "#f1c40f";
+        tCtx.beginPath(); tCtx.ellipse(0, 0, 6, 2, 0, 0, 7); tCtx.fill(); tCtx.restore();
+    });
+    particles.forEach(p => p.draw(tCtx));
+    tCtx.restore();
+}
+
+function draw() {
+    ctx.fillStyle = "#1a1d12"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (!gameActive) { requestAnimationFrame(draw); return; }
+    renderWorld(ctx);
+    if (isRightMouseDown) {
+        ctx.save(); ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 120, 0, Math.PI * 2); ctx.clip();
+        ctx.fillStyle = "#1a1d12"; ctx.fill(); renderWorld(ctx, 1.6); ctx.restore();
+        ctx.strokeStyle = "cyan"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 120, 0, 7); ctx.stroke();
+    }
+    recoil += ((isMouseDown && player.ammo > 0 ? 35 : 8) - recoil) * 0.12;
+    ctx.strokeStyle = "white"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y-recoil); ctx.lineTo(mouse.x, mouse.y-recoil-8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y+recoil); ctx.lineTo(mouse.x, mouse.y+recoil+8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mouse.x-recoil, mouse.y); ctx.lineTo(mouse.x-recoil-8, mouse.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mouse.x+recoil, mouse.y); ctx.lineTo(mouse.x+recoil+8, mouse.y); ctx.stroke();
+    ctx.fillStyle = "red"; ctx.fillRect(mouse.x-1, mouse.y-1, 3, 3);
+    update(); requestAnimationFrame(draw);
+}
+init(); draw();
+</script>
+</body>
+</html>
